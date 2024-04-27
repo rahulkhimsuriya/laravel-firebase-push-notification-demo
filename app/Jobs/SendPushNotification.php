@@ -11,6 +11,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Throwable;
 
 class SendPushNotification implements ShouldQueue
 {
@@ -20,46 +21,86 @@ class SendPushNotification implements ShouldQueue
         public string $token,
         public string $title,
         public string $body,
+        public array $data = [],
     ) {
     }
 
     public function handle(): void
     {
-        $firebaseConfig = json_decode(file_get_contents(base_path("/firebase/firebase.json")), true);
-
-
         $response = Http::acceptJson()
             ->timeout(5)
             ->withToken($this->googleToken())
-            ->post("https://fcm.googleapis.com/v1/projects/{$firebaseConfig['project_id']}/messages:send", $this->payload());
+            ->post($this->pushNotificationUrl(), $this->payload());
 
         if ($response->failed()) {
             $response->throw();
         }
     }
 
-    private function googleToken()
+    private function firebaseConfig(): array
     {
-        if (!Cache::get('google_access_token')) {
-            $scopes = ['https://www.googleapis.com/auth/cloud-platform'];
-            $credentials = new ServiceAccountCredentials($scopes, base_path("/firebase/firebase.json"));
-            $response = $credentials->fetchAuthToken();
-
-            Cache::put('google_access_token', $response['access_token'], Carbon::now()->addSeconds($response['expires_in']));
-        }
-
-        return Cache::get('google_access_token');
+        return json_decode(file_get_contents(base_path("/firebase/firebase.json")), true);
     }
 
-    private function payload()
+    private function pushNotificationUrl(): string
+    {
+        $firebaseConfig = $this->firebaseConfig();
+
+        return "https://fcm.googleapis.com/v1/projects/{$firebaseConfig['project_id']}/messages:send";
+    }
+
+    private function googleToken(): string|Throwable
+    {
+        if (!Cache::get('firebasePushNotificationGoogleAccessToken')) {
+            $credentials = new ServiceAccountCredentials(
+                [
+                    'https://www.googleapis.com/auth/cloud-platform'
+                ],
+                $this->firebaseConfig()
+            );
+            $response = $credentials->fetchAuthToken();
+
+            Cache::put(
+                'firebasePushNotificationGoogleAccessToken',
+                $response['access_token'],
+                Carbon::now()->addSeconds($response['expires_in'])->subSeconds(5)
+            );
+        }
+
+        return Cache::get('firebasePushNotificationGoogleAccessToken');
+    }
+
+    private function payload(): array
     {
         return [
-            "message" => [
-                "token" => $this->token,
-                "notification" => [
-                    "title" => $this->title,
-                    "body" => $this->body,
-                ]
+            'message' => [
+                'token' => $this->token,
+                'data' => (object) $this->data,
+                'notification' => [
+                    'title' => $this->title,
+                    'body' => $this->body,
+                ],
+                // "android" => [
+                //     'priority' => 'high',
+                //     'data' => (object) $this->data,
+                //     'notification' => [
+                //         'title' => $this->title,
+                //         'body' => $this->body,
+                //     ],
+                // ],
+                // 'webpush' => [
+                //     'data' => (object) $this->data,
+                //     'notification' => [
+                //         'title' => $this->title,
+                //         'body' => $this->body,
+                //     ],
+                // ],
+                // 'apns' => [
+                //     'payload' => [
+                //         'title' => $this->title,
+                //         'body' => $this->body,
+                //     ],
+                // ]
             ]
         ];
     }
